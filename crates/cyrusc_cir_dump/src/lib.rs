@@ -3,21 +3,29 @@
 
 use cyrusc_ast::operators::UnaryOperator;
 use cyrusc_diagcentral::exit_with_msg;
-use cyrusc_internal::cir::{cir::*, types::CIRType};
+use cyrusc_internal::cir::{
+    cir::*,
+    typectx::{CIRTypeContext, CIRTypeContextID},
+    types::CIRType,
+};
 use cyrusc_strescape::escape_string;
-use std::{fs, path::PathBuf};
+use fx_hash::{FxHashSet, FxHashSetExt};
+use std::{fs, path::PathBuf, sync::Arc};
 
 pub struct CIRPrinter<'a> {
+    tctx: Arc<CIRTypeContext>,
     module: &'a CIRModule,
     out: String,
     indent: usize,
+
+    visiting_types: FxHashSet<CIRTypeContextID>,
 }
 
-pub fn process_cir_dump_for_modules(modules: &[Box<CIRModule>], output_path: PathBuf) {
+pub fn process_cir_dump_for_modules(modules: &[Box<CIRModule>], tctx: Arc<CIRTypeContext>, output_path: PathBuf) {
     debug_assert!(output_path.is_dir());
 
     for module in modules {
-        let mut printer = CIRPrinter::new(module);
+        let mut printer = CIRPrinter::new(module, tctx.clone());
         let dump = printer.print_module();
 
         // derive file name: <module>.cir
@@ -37,11 +45,13 @@ pub fn process_cir_dump_for_modules(modules: &[Box<CIRModule>], output_path: Pat
 }
 
 impl<'a> CIRPrinter<'a> {
-    pub fn new(module: &'a CIRModule) -> Self {
+    pub fn new(module: &'a CIRModule, tctx: Arc<CIRTypeContext>) -> Self {
         Self {
+            tctx,
             module,
             out: String::new(),
             indent: 0,
+            visiting_types: FxHashSet::new(),
         }
     }
 }
@@ -337,14 +347,18 @@ impl<'a> CIRPrinter<'a> {
                     format!("%{}", value_ref.irv_id.0)
                 }
             },
+
             CIRExprKind::Literal(literal) => self.print_literal(literal),
+
             CIRExprKind::Infix(infix) => format!(
                 "({} {} {})",
                 self.print_expr(&infix.lhs),
                 infix.op,
                 self.print_expr(&infix.rhs)
             ),
+
             CIRExprKind::Prefix(prefix) => format!("{}{}", prefix.op, self.print_expr(&prefix.operand)),
+
             CIRExprKind::Call(call) => {
                 let mut args = call.args.iter().map(|a| self.print_expr(a)).collect::<Vec<_>>();
 
@@ -375,11 +389,15 @@ impl<'a> CIRPrinter<'a> {
 
                 format!("{}({})", dispatch, args.join(", "))
             }
+
             CIRExprKind::Assign(assign) => {
                 format!("{} = {}", self.print_expr(&assign.lhs), self.print_expr(&assign.rhs))
             }
+
             CIRExprKind::AddrOf(addr_of) => format!("&{}", self.print_expr(&addr_of.operand)),
+
             CIRExprKind::Deref(deref) => format!("*{}", self.print_expr(&deref.operand)),
+
             CIRExprKind::Tuple(tuple) => {
                 let elements = tuple
                     .elements
@@ -390,9 +408,11 @@ impl<'a> CIRPrinter<'a> {
 
                 format!("({})", elements)
             }
+
             CIRExprKind::TupleAccess(tuple_access) => {
                 format!("{}.{}", self.print_expr(&tuple_access.operand), tuple_access.index)
             }
+
             CIRExprKind::FieldAccess(field_access) => match &field_access.kind {
                 CIRFieldAccessKind::Struct { index, .. } => {
                     format!("{}.{}", self.print_expr(&field_access.operand), index)
@@ -405,6 +425,7 @@ impl<'a> CIRPrinter<'a> {
                     )
                 }
             },
+
             CIRExprKind::SizeOf(sizeof) => format!("sizeof({})", self.print_type(&sizeof.ty)),
 
             CIRExprKind::Unary(unary) => {
@@ -420,6 +441,7 @@ impl<'a> CIRPrinter<'a> {
                     }
                 }
             }
+
             CIRExprKind::Array(array) => {
                 let elements = array
                     .elements
@@ -430,11 +452,13 @@ impl<'a> CIRPrinter<'a> {
 
                 format!("{}[{}]", self.print_type(&array.ty), elements)
             }
+
             CIRExprKind::ArrayIndex(idx) => {
                 let base = self.print_expr(&idx.operand);
                 let i = self.print_expr(&idx.index);
                 format!("{base}[{i}]")
             }
+
             CIRExprKind::StructInit(struct_init) => {
                 let mut parts = Vec::new();
 
@@ -446,13 +470,17 @@ impl<'a> CIRPrinter<'a> {
                 let body = parts.join(", ");
                 format!("struct {{ {body} }}")
             }
+
             CIRExprKind::UnionInit(union_init) => {
                 let value = self.print_expr(&union_init.expr);
 
                 format!("union {{ {value} }}")
             }
+
             CIRExprKind::EnumInit(enum_init) => {
-                let variant_name = enum_init.enum_type.lookup_variant(&enum_init.ident).unwrap().ident();
+                let enum_type = enum_init.ty.as_enum(&self.tctx).unwrap();
+
+                let variant_name = enum_type.lookup_variant(&enum_init.ident).unwrap().ident();
 
                 match &enum_init.variant {
                     CIREnumInitVariant::Unit => {
@@ -502,6 +530,7 @@ impl<'a> CIRPrinter<'a> {
 
                 out
             }
+
             CIRExprKind::Dynamic(dynamic) => {
                 let data = self.print_expr(&dynamic.data_expr);
 
@@ -557,24 +586,56 @@ impl<'a> CIRPrinter<'a> {
     fn print_type(&mut self, ty: &CIRType) -> String {
         match ty {
             CIRType::Plain(plain_type) => plain_type.to_string(),
+
             CIRType::Const(inner) => format!("const {}", self.print_type(inner)),
+
             CIRType::Pointer(inner) => format!("{}*", self.print_type(inner)),
-            CIRType::Struct(struct_type) => {
-                let mut out = String::from("struct");
+
+            CIRType::Struct(type_id) => {
+                let struct_type = self.tctx.get_struct(*type_id);
+
+                // for named types
+                if let Some(name) = &struct_type.name {
+                    return format!("{}({})", name, type_id);
+                }
+
+                // for unnamed types
+                if !self.visiting_types.insert(*type_id) {
+                    return format!("struct({})", type_id);
+                }
+
+                let mut out = format!("struct({})", type_id);
 
                 out.push_str(" { ");
 
-                let mut parts = Vec::new();
+                let mut fields = Vec::new();
                 for (idx, (fname, _loc)) in struct_type.fields_info.iter().enumerate() {
-                    let fty = &struct_type.fields[idx];
-                    parts.push(format!("{fname}: {}", self.print_type(fty)));
+                    let ty = &struct_type.fields[idx];
+
+                    fields.push(format!("{fname}: {}", self.print_type(ty)));
                 }
 
-                out.push_str(&parts.join(", "));
+                out.push_str(&fields.join(", "));
                 out.push_str(" }");
+
+                self.visiting_types.remove(type_id);
+
                 out
             }
-            CIRType::Enum(enum_type) => {
+
+            CIRType::Enum(type_id) => {
+                let enum_type = self.tctx.get_enum(*type_id);
+
+                // for named types
+                if let Some(name) = &enum_type.name {
+                    return name.clone();
+                }
+
+                // for unnamed types
+                if !self.visiting_types.insert(*type_id) {
+                    return format!("enum({})", type_id);
+                }
+
                 let mut out = String::from("enum");
                 out.push_str(" { ");
 
@@ -585,8 +646,14 @@ impl<'a> CIRPrinter<'a> {
                         CIREnumVariant::Valued(name, _, tag) => {
                             parts.push(format!("{name} = {}", tag));
                         }
-                        CIREnumVariant::Payload(name, types, _) => {
-                            let elements = types.iter().map(|t| self.print_type(t)).collect::<Vec<_>>().join(", ");
+                        CIREnumVariant::Payload(name, struct_type, _) => {
+                            let elements = struct_type
+                                .fields
+                                .iter()
+                                .map(|t| self.print_type(t))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+
                             parts.push(format!("{name}({elements})"));
                         }
                     }
@@ -594,22 +661,42 @@ impl<'a> CIRPrinter<'a> {
 
                 out.push_str(&parts.join(", "));
                 out.push_str(" }");
+
+                self.visiting_types.remove(type_id);
+
                 out
             }
-            CIRType::Union(union_type) => {
+
+            CIRType::Union(type_id) => {
+                let union_type = self.tctx.get_union(*type_id);
+
+                // for named types
+                if let Some(name) = &union_type.name {
+                    return name.clone();
+                }
+
+                // for unnamed types
+                if !self.visiting_types.insert(*type_id) {
+                    return format!("union({})", type_id);
+                }
+
                 let mut out = String::from("union");
                 out.push_str(" { ");
 
                 let mut parts = Vec::new();
                 for (idx, (fname, _loc)) in union_type.fields_info.iter().enumerate() {
-                    let fty = &union_type.fields[idx];
-                    parts.push(format!("{fname}: {}", self.print_type(fty)));
+                    let ty = &union_type.fields[idx];
+                    parts.push(format!("{fname}: {}", self.print_type(ty)));
                 }
 
                 out.push_str(&parts.join(", "));
                 out.push_str(" }");
+
+                self.visiting_types.remove(type_id);
+
                 out
             }
+
             CIRType::FuncType(func) => {
                 let params = func
                     .params
@@ -617,20 +704,14 @@ impl<'a> CIRPrinter<'a> {
                     .map(|p| self.print_type(p))
                     .collect::<Vec<_>>()
                     .join(", ");
+
                 let variadic = if func.is_var { ", ..." } else { "" };
+
                 format!("fn({}{}) {}", params, variadic, self.print_type(&func.ret_type))
             }
-            CIRType::Tuple(tuple) => {
-                let elements = tuple
-                    .elements
-                    .iter()
-                    .map(|e| self.print_type(e))
-                    .collect::<Vec<_>>()
-                    .join(", ");
 
-                format!("tuple({})", elements)
-            }
             CIRType::Array(array) => format!("{}[{}]", self.print_type(&array.element_type), array.len),
+
             CIRType::Dynamic(dynamic) => {
                 format!("dynamic(vtable#{})", dynamic.vtable_id.0)
             }

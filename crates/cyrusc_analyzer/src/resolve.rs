@@ -25,6 +25,7 @@ impl<'a> AnalysisContext<'a> {
     }
 
     pub(crate) fn is_const_qualified_lvalue(&self, expr: &TypedExpr) -> bool {
+        // declaration-level constness
         if matches!(expr.val_cat, ValueCategory::LValue(Mutability::Const)) {
             return true;
         }
@@ -39,15 +40,15 @@ impl<'a> AnalysisContext<'a> {
 
     #[inline]
     pub(crate) fn fold_const_expr(&mut self, expr: &mut TypedExpr) {
-        let mut folder = ConstFolder::new(self, &self.decl_tables, self.target, self);
+        let mut folder = ConstFolder::new(self, &self.decl_tables, self.target, self.tctx.clone(), self);
 
         folder.fold_expr(expr, self);
     }
 
-    fn resolve_variable_rhs_expr(&self, decl_id: DeclID) -> Option<TypedExpr> {
+    fn get_var_rhs_expr(&self, decl_id: DeclID) -> Option<TypedExpr> {
         if let Some(var_decl_id) = decl_id.as_var() {
             let var_decl = self.decl_tables.var_decl(var_decl_id);
-            
+
             var_decl.rhs.clone()
         } else if let Some(global_var_decl_id) = decl_id.as_global_var() {
             let global_var_decl = self.decl_tables.global_var_decl(global_var_decl_id);
@@ -60,8 +61,8 @@ impl<'a> AnalysisContext<'a> {
 }
 
 impl<'a> ConstResolver for AnalysisContext<'a> {
-    fn resolve_symbol_expr(&self, decl_id: DeclID) -> Option<TypedExpr> {
-        self.resolve_variable_rhs_expr(decl_id)
+    fn get_var_rhs_expr(&self, decl_id: DeclID) -> Option<TypedExpr> {
+        self.get_var_rhs_expr(decl_id)
     }
 
     fn is_decl_const(&self, decl_id: DeclID) -> bool {

@@ -3,6 +3,14 @@
 JOBS     ?= 24
 PROFILE  ?= debug
 
+ifeq ($(OS),Windows_NT)
+	EXE = .exe
+	PY_CMD = python
+else
+	EXE = 
+	PY_CMD = python3
+endif
+
 INPUT    ?= ./tmp/main.cyrus
 STDLIB   ?= ./stdlib
 LLVM_OUT ?= ./tmp/llvmir
@@ -11,7 +19,7 @@ CIR_DUMP_OUT ?= ./tmp/cir_dump
 ARGS     ?=
 
 TARGET_DIR = ./target/$(PROFILE)
-COMPILER   = $(TARGET_DIR)/cyrus
+COMPILER   = $(TARGET_DIR)/cyrus$(EXE)
 
 ifeq ($(PROFILE),release)
 	CARGO_PROFILE_FLAG = --release
@@ -34,8 +42,11 @@ resolver:
 resolver_dump_global_symbols:
 	$(CARGO_RUN) -p cyrusc_resolver --bin cyrusc_resolver_debugger -- $(INPUT) ./tmp/global_symbols_dump $(COMMON_FLAGS) --stdlib=$(STDLIB) && code ./tmp/global_symbols_dump
 
-cir_walk analyzer parser lexer:
+cir_walk parser lexer:
 	$(CARGO_RUN) -p cyrusc_$@ -- $(INPUT) $(COMMON_FLAGS) --stdlib=$(STDLIB)
+
+semantic-only:
+	$(CARGO_RUN) -- semantic-only $(INPUT) --stdlib=$(STDLIB) $(ARGS)
 
 emit-llvm:
 	$(CARGO_RUN) -- emit-llvm $(INPUT) -o $(LLVM_OUT) --stdlib=$(STDLIB) $(ARGS)
@@ -58,9 +69,17 @@ build:
 test: build testsuite
 	$(CARGO_TEST) --all $(ARGS)
 
-testsuite:
-	python3 ./tests/test_suite.py \
+testsuite: build
+	$(PY_CMD) ./tests/test_suite.py \
 		-d tests \
 		--output ./tmp/tests \
 		--compiler $(COMPILER) \
+		--flags "--stdlib=$(STDLIB) --quiet"
+
+testsuite-fail: build
+	$(PY_CMD) ./tests/test_suite.py \
+		-d tests \
+		--output ./tmp/tests \
+		--compiler $(COMPILER) \
+		--fail \
 		--flags "--stdlib=$(STDLIB) --quiet"

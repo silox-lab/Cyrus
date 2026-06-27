@@ -19,7 +19,7 @@ impl<'a> AnalysisContext<'a> {
         tuple_value: &mut TypedTupleExpr,
         expected_type: Option<SemaType>,
     ) -> Option<SemaType> {
-        let mut elements: Vec<SemaType> = Vec::new();
+        let mut elements = Vec::new();
 
         let tuple_type_opt = match expected_type {
             Some(sema_type) => sema_type.as_tuple_type().cloned(),
@@ -30,11 +30,11 @@ impl<'a> AnalysisContext<'a> {
             let mut expected_type: Option<SemaType> = None;
 
             if let Some(tuple_type) = &tuple_type_opt {
-                expected_type = tuple_type.elements.get(i).cloned();
+                expected_type = tuple_type.elements.get(i).cloned().map(|(ty, _)| ty);
             }
 
             match self.analyze_expr(expr, expected_type) {
-                Some(sema_type) => elements.push(sema_type),
+                Some(ty) => elements.push((ty, expr.loc)),
                 None => continue,
             }
         }
@@ -52,16 +52,19 @@ impl<'a> AnalysisContext<'a> {
     /// element if the access is valid.
     pub(crate) fn analyze_tuple_access(
         &mut self,
-        tuple_member_access: &mut TypedTupleAccessExpr,
+        member_access: &mut TypedTupleAccessExpr,
         expected_type: Option<SemaType>,
     ) -> Option<SemaType> {
-        let operand_type = self.analyze_expr(&mut tuple_member_access.operand, expected_type)?;
+        let mut operand_type = self.analyze_expr(&mut member_access.operand, expected_type)?;
+
+        // expand operand type
+        operand_type = self.expand_sema_type(operand_type, member_access.loc);
 
         if !operand_type.const_inner().as_tuple_type().is_some() {
             self.reporter.report(Diag {
                 level: DiagLevel::Error,
                 kind: Box::new(AnalyzerDiagKind::TupleMemberAccessOnNonTupleOperand),
-                loc: Some(tuple_member_access.loc),
+                loc: Some(member_access.loc),
                 hint: None,
             });
             return None;
@@ -71,20 +74,30 @@ impl<'a> AnalysisContext<'a> {
 
         // inbounds check for tuple type
 
-        if tuple_member_access.index > (tuple_type.elements.len() - 1) {
+        if tuple_type.elements.is_empty() {
             self.reporter.report(Diag {
                 level: DiagLevel::Error,
-                kind: Box::new(AnalyzerDiagKind::TupleIndexOutOfRange {
-                    index: tuple_member_access.index.try_into().unwrap(),
-                    length: tuple_type.elements.len(),
-                }),
-                loc: Some(tuple_member_access.loc),
+                kind: Box::new(AnalyzerDiagKind::MemberAccessOnEmptyTuple),
+                loc: Some(member_access.loc),
                 hint: None,
             });
             return None;
         }
 
-        let element_type = tuple_type.elements.get(tuple_member_access.index).unwrap();
+        if member_access.index > (tuple_type.elements.len() - 1) {
+            self.reporter.report(Diag {
+                level: DiagLevel::Error,
+                kind: Box::new(AnalyzerDiagKind::TupleIndexOutOfRange {
+                    index: member_access.index.try_into().unwrap(),
+                    length: tuple_type.elements.len(),
+                }),
+                loc: Some(member_access.loc),
+                hint: None,
+            });
+            return None;
+        }
+
+        let (element_type, _) = tuple_type.elements.get(member_access.index).unwrap();
 
         Some(element_type.clone())
     }
