@@ -3,11 +3,11 @@
 import std::libc{printf};
 
 struct Inner {
-    pub value: int
+    pub value: int32
 }
 
 struct Outer {
-    pub name: char*,
+    pub name: uint8*,
     pub inner: Inner
 }
 

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The Cyrus Language
 
-import std::libc{strlen, strcmp, memmove, isspace, tolower, toupper, printf};
-import std::mem{Allocator};
+import std::libc{strlen, strcmp, memmove, isspace, tolower, toupper};
+import std::libc::types{c_int};
 import std::collections{Vector};
+import std::mem{Allocator};
+import std::slices{Slice};
 
 pub struct String {
-    vec: Vector<char>,
+    vec: Vector<uint8>,
 
     pub fn new(const allocator: Allocator) Self {
-        var vec: Vector<char> = Vector.new(allocator);
+        var vec: Vector<uint8> = Vector.new(allocator);
 
         vec.push('\0'); // null-terminated
 
@@ -17,19 +19,19 @@ pub struct String {
     }
 
     pub fn with_capacity(const allocator: Allocator, const cap: usize) Self {
-        var vec: Vector<char> = Vector.with_capacity(allocator, cap);
+        var vec: Vector<uint8> = Vector.with_capacity(allocator, cap);
 
         vec.push('\0');
         
         return Self { vec };
     }
 
-    pub fn from_str(const allocator: Allocator, const str: const char*) Self {
+    pub fn from_str(const allocator: Allocator, const str: const uint8*) Self {
         @assert(str != null, "input string cannot be null");
 
         const len = strlen(str);
 
-        var vec: Vector<char> = Vector.new(allocator);
+        var vec: Vector<uint8> = Vector.new(allocator);
 
         for (var i: usize = 0; i < len; i++) {
             vec.push(str[i]);
@@ -40,7 +42,19 @@ pub struct String {
         return Self { vec };
     }
 
-    // TODO: Add method: From slice.
+    pub fn from_slice(const allocator: Allocator, const slice: const Slice<uint8>) Self {
+        var vec: Vector<uint8> = Vector.new(allocator);
+
+        for (var i: usize = 0; i < slice.len(); i++) {
+            const item = slice.get_const(i).unwrap();
+
+            vec.push(*item);
+        }
+
+        vec.push('\0');
+        
+        return Self { vec };
+    }
 
     pub fn reserve(&self, const extra: usize) {
         const required = self->len() + extra + 1;
@@ -50,7 +64,7 @@ pub struct String {
         }
     }
 
-    pub fn push(&self, const ch: char) {        
+    pub fn push(&self, const ch: uint8) {        
         var data = self->vec.data();
         var current = &data[self->len()];
 
@@ -59,7 +73,7 @@ pub struct String {
         self->vec.push('\0');
     }
 
-    pub fn push_str(&self, const str: char*) {
+    pub fn push_str(&self, const str: uint8*) {
         @assert(str != null, "input string cannot be null");
 
         const len = strlen(str);
@@ -83,16 +97,12 @@ pub struct String {
     }
 
     pub fn trim_start(&self) {
-        const str = self->as_str_const();
+        var str: const uint8* = self->as_str_const();
         const len = self->vec.len();
 
         var start: usize = 0;
-        while (start < len - 1 && isspace(str[start]) != 0) {
+        while (start < len - 1 && isspace(@cast(c_int, str[start])) != 0) {
             start++;
-        }
-
-        if (start == 0) {
-            return;
         }
 
         if (start >= len - 1) {
@@ -101,7 +111,8 @@ pub struct String {
         }
 
         const n = len - start;
-        memmove(@cast(void*, str), @cast(const void*, str + start), n);
+
+        memmove(@cast(void*, str), @cast(void*, str + start), n);
 
         while (start > 0) {
             self->vec.pop();
@@ -117,7 +128,7 @@ pub struct String {
             return;
         }
 
-        while (len > 1 && isspace(str[len - 1]) != 0) {
+        while (len > 1 && isspace(@cast(c_int, str[len - 1])) != 0) {
             self->vec.pop();
             len--;
         }
@@ -127,7 +138,7 @@ pub struct String {
         var str = self->as_str();
 
         for (var i: usize = 0; i < self->vec.len(); i++) {
-            str[i] = @cast(char, tolower(str[i]));
+            str[i] = @cast(uint8, tolower(@cast(c_int, str[i])));
         }
     }
 
@@ -135,15 +146,15 @@ pub struct String {
         var str = self->as_str();
 
         for (var i: usize = 0; i < self->vec.len(); i++) {
-            str[i] = @cast(char, toupper(str[i]));
+            str[i] = @cast(uint8, toupper(@cast(c_int, str[i])));
         }
     }
 
-    pub inline fn as_str(&self) char* {
+    pub inline fn as_str(&self) uint8* {
         return self->vec.data();
     }
 
-    pub inline fn as_str_const(&const self) const char* {
+    pub inline fn as_str_const(&const self) const uint8* {
         return self->vec.data_const();
     }
 

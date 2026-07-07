@@ -347,7 +347,6 @@ pub extern(c) {
     fn isspace(c: types::c_int) types::c_int;
     fn isupper(c: types::c_int) types::c_int;
     fn isxdigit(c: types::c_int) types::c_int;
-
     fn tolower(c: types::c_int) types::c_int;
     fn toupper(c: types::c_int) types::c_int;
 }
